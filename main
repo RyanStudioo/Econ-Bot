@@ -1,0 +1,879 @@
+import discord
+from discord import app_commands
+import sqlite3
+import aiosqlite
+from dotenv import load_dotenv
+import os
+from add_on import Pagination
+import asyncio
+import typing
+
+load_dotenv()
+Token = os.getenv('DISCORD_TOKEN')
+intent = discord.Intents.all()
+client = discord.Client(intents=intent)
+tree = app_commands.CommandTree(client)
+
+
+webhook = discord.SyncWebhook.from_url("https://discord.com/api/webhooks/1246173910798565456/KE0womHgVCBlxfuaJ_DMeaGe3rEeAtQh1nnLg19xrfkP19CxX1LiNlnEjk23CHnlutGO")
+db = None
+
+def format(number: str):
+    final = number
+    if len(number) > 3:
+        length = len(number) - 3
+        final = f"{number[:length]}k"
+    if len(number) > 6:
+        length = len(number) - 6
+        final = f"{number[:length]}m"
+    return final
+
+def send_to_webhook(command: str, interaction_user: str, server: str, additional: str = None):
+    embed = discord.Embed(title=f"Command used in {server}", description=f"{command} was used")
+    embed.add_field(name="Info", value=f"{command} was used by {interaction_user}", inline=False)
+    embed.add_field(name="Additional Info", value=f"{additional}")
+    webhook.send(embed=embed)
+
+def response(message):
+    if "oink" in message:
+        return "oink!"
+
+
+@tree.command(name="avatar", description="Get a user's avatar")
+@app_commands.describe(member='member')
+async def avatar(interaction: discord.Interaction, member: discord.Member = None):
+    if member:
+        await interaction.response.send_message(member.display_avatar)
+        return
+    await interaction.response.send_message(interaction.user.display_avatar)
+
+
+@tree.command(name="add_currency", description="Adds currency to a user")
+@app_commands.describe(member='member')
+@app_commands.describe(amount="amount")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def add_currency(interaction: discord.Interaction, member: discord.Member, amount: int):
+    embed = discord.Embed(title="Add Currency",
+                          description=f"/add_currency was used by {interaction.user.display_name}",
+                          colour=discord.Colour.blue())
+    embed.add_field(name="\u200b", value="", inline=False)
+
+    async with db.execute('SELECT * FROM currency WHERE GUILD_ID=? AND ID=?', (interaction.guild_id, member.id)) as cur:
+        exist = await cur.fetchall()
+    if not exist:
+        await db.execute("INSERT INTO currency VALUES(?, ?, ?)", (member.id, interaction.guild_id, amount))
+        embed.add_field(name="Successfully Added!", value=f"Added ${amount} to {member.display_name}", inline=False)
+        # embed.add_field(name="\u200b", value="", inline=False)
+        embed.add_field(name=f"{member.display_name}'s  Balance", value=f"💵 ${amount}", inline=False)
+        embed.set_thumbnail(url=member.display_avatar)
+        await interaction.response.send_message(embed=embed)
+        await db.commit()
+        send_to_webhook("/add_currency", f"{interaction.user.display_name} [{interaction.user.id}]",
+                        f"{interaction.guild} [{interaction.guild_id}]",
+                        f"{amount} added to {member} [{member.id}] (new profile)")
+        return
+    final = int(exist[0][2]) + amount
+    await db.execute("UPDATE currency SET MONEY=? WHERE ID=? AND GUILD_ID=?",
+                (final, member.id, interaction.guild_id))
+    await db.commit()
+    embed.add_field(name="Successfully Added!", value=f"Added ${amount} to {member.display_name}", inline=False)
+    # embed.add_field(name="\u200b", value="", inline=False)
+    embed.add_field(name=f"{member.display_name}'s  Balance", value=f"💵 ${final}", inline=False)
+    embed.set_thumbnail(url=member.display_avatar)
+    await interaction.response.send_message(embed=embed)
+    send_to_webhook("/add_currency", f"{interaction.user.display_name} [{interaction.user.id}]",
+                    f"{interaction.guild} [{interaction.guild_id}]",
+                    f"{amount} added to {member} [{member.id}]")
+    return
+
+
+@tree.command(name="remove_currency", description="Removes currency from a user")
+@app_commands.describe(member='member')
+@app_commands.describe(amount="amount")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def remove_currency(interaction: discord.Interaction, member: discord.Member, amount: int):
+    embed = discord.Embed(title="Remove Currency",
+                          description=f"/remove_currency was used by {interaction.user.display_name}",
+                          colour=discord.Colour.blue())
+    embed.add_field(name="\u200b", value="", inline=False)
+    async with db.execute("SELECT * FROM currency WHERE GUILD_ID=? AND ID=?", (interaction.guild_id, member.id)) as cur:
+        exist = await cur.fetchall()
+    if not exist:
+        await db.execute("INSERT INTO currency VALUES(?, ?, ?)", (member.id, interaction.guild_id, -amount))
+        await db.commit()
+        embed.add_field(name="Successfully Removed!", value=f"Removed ${amount} from {member.display_name}", inline=False)
+        # embed.add_field(name="\u200b", value="", inline=False)
+        embed.add_field(name=f"{member.display_name}'s  Balance", value=f"💵 ${-amount}", inline=False)
+        embed.set_thumbnail(url=member.display_avatar)
+        await interaction.response.send_message(embed=embed)
+        send_to_webhook("/remove_currency", f"{interaction.user.display_name} [{interaction.user.id}]",
+                        f"{interaction.guild} [{interaction.guild_id}]",
+                        f"{amount} was removed from {member} [{member.id}] (new profile)")
+        return
+    final = int(exist[0][2]) - amount
+    await db.execute("UPDATE currency SET MONEY=? WHERE ID=? AND GUILD_ID=?",
+                (final, member.id, interaction.guild_id))
+    await db.commit()
+    embed.add_field(name="Successfully Removed!", value=f"Removed ${amount} from {member.display_name}", inline=False)
+    # embed.add_field(name="\u200b", value="", inline=False)
+    embed.add_field(name=f"{member.display_name}'s  Balance", value=f"💵 ${final}", inline=False)
+    embed.set_thumbnail(url=member.display_avatar)
+    await interaction.response.send_message(embed=embed)
+    send_to_webhook("/remove_currency", f"{interaction.user.display_name} [{interaction.user.id}]",
+                    f"{interaction.guild} [{interaction.guild_id}]",
+                    f"{amount} was removed from {member} [{member.id}]")
+    return
+
+
+@tree.command(name="set_currency", description="Sets a user currency")
+@app_commands.describe(member='member')
+@app_commands.describe(amount="amount")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def set_currency(interaction: discord.Interaction, member: discord.Member, amount: int):
+    embed = discord.Embed(title="Set Currency",
+                          description=f"/set_currency was used by {interaction.user.display_name}",
+                          colour=discord.Colour.blue())
+    embed.add_field(name="\u200b", value="", inline=False)
+    async with db.execute("SELECT MONEY FROM currency WHERE GUILD_ID=? AND ID=?", (interaction.guild_id, member.id)) as cur:
+        exist = await cur.fetchall()
+    if not exist:
+        await db.execute("INSERT INTO currency VALUES(?, ?, ?)", (member.id, interaction.guild_id, amount))
+        await db.commit
+        embed.add_field(name="Successfully Set!", value=f"Set {member.display_name} to ${amount}",
+                        inline=False)
+        # embed.add_field(name="\u200b", value="", inline=False)
+        embed.add_field(name=f"{member.display_name}'s  Balance", value=f"💵 ${-amount}", inline=False)
+        embed.set_thumbnail(url=member.display_avatar)
+        await interaction.response.send_message(embed=embed)
+        send_to_webhook("/set_currency", f"{interaction.user.display_name} [{interaction.user.id}]",
+                        f"{interaction.guild} [{interaction.guild_id}]",
+                        f" {member} [{member.id}] was set to {amount} (new profile)")
+        return
+    await db.execute("UPDATE currency SET MONEY=? WHERE ID=? AND GUILD_ID=?",
+                (amount, member.id, interaction.guild_id))
+    await db.commit()
+    embed.add_field(name="Successfully Set!", value=f"Set {member.display_name} to ${amount}", inline=False)
+    # embed.add_field(name="\u200b", value="", inline=False)
+    embed.add_field(name=f"{member.display_name}'s  Balance", value=f"💵 ${amount}", inline=False)
+    embed.set_thumbnail(url=member.display_avatar)
+    await interaction.response.send_message(embed=embed)
+    send_to_webhook("/set_currency", f"{interaction.user.display_name} [{interaction.user.id}]",
+                    f"{interaction.guild} [{interaction.guild_id}]",
+                    f" {member} [{member.id}] was set to {amount}")
+    return
+
+
+@tree.command(name="balance", description="Checks a user's balance")
+@app_commands.describe(member='member')
+async def balance(interaction: discord.Interaction, member: discord.Member = None):
+    if not member:
+        member = interaction.user
+    embed = discord.Embed(title="Balance",
+                          description=f"",
+                          colour=discord.Colour.blue())
+    async with db.execute("SELECT MONEY FROM currency WHERE GUILD_ID=? AND ID=?",
+                          (interaction.guild_id, member.id)) as cur:
+        exist = await cur.fetchall()
+    if not exist:
+        await db.execute("INSERT INTO currency VALUES(?, ?, ?)", (member.id, interaction.guild_id, 0))
+        await db.commit()
+        # embed.add_field(name="\u200b", value="", inline=False)
+        embed.add_field(name=f"{interaction.user.display_name}'s  Balance", value=f"💵 $0", inline=False)
+        embed.set_thumbnail(url=member.display_avatar)
+        await interaction.response.send_message(embed=embed)
+        return
+    # embed.add_field(name="\u200b", value="", inline=False)
+    await db.commit()
+    embed.add_field(name=f"{interaction.user.display_name}'s  Balance", value=f"💵 ${exist[0][0]}", inline=False)
+    embed.set_thumbnail(url=member.display_avatar)
+    await interaction.response.send_message(embed=embed)
+    return
+
+
+@tree.command(name="transfer_currency_to", description="Transfer currency from you to a user")
+@app_commands.describe(member='member')
+@app_commands.describe(amount="amount")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def transfer_currency_to(interaction: discord.Interaction, member: discord.Member, amount: int):
+    embed = discord.Embed(title="Transfer Currency To",
+                          description=f"/transfer_currency_to was used by {interaction.user.display_name}",
+                          colour=discord.Colour.blue())
+    embed.add_field(name="\u200b", value="", inline=False)
+    async with db.execute("SELECT MONEY FROM currency WHERE GUILD_ID=? AND ID=?", (interaction.guild_id, interaction.user.id)) as cur:
+        from_money = await cur.fetchall()
+    async with db.execute("SELECT MONEY FROM currency WHERE GUILD_ID=? AND ID=?", (interaction.guild_id, member.id)) as cur:
+        to_money = await cur.fetchall()
+    if not from_money or from_money[0][0] < amount:
+        await interaction.response.send_message(f"```Error: No currency available to transfer```", ephemeral=True)
+        db.commit()
+        return
+    if not to_money:
+        await db.execute("INSERT INTO currency VALUES(?,?,?)", (member.id, interaction.guild_id, 0))
+        to_money = [(0)]
+        db.commit()
+    from_final = int(from_money[0][0]) - amount
+    to_final = int(to_money[0][0]) + amount
+    await db.execute('UPDATE currency SET MONEY=? WHERE ID=? AND GUILD_ID=?',
+                (from_final, interaction.user.id, interaction.guild_id))
+    await db.execute("UPDATE currency SET MONEY=? WHERE ID=? AND GUILD_ID=?",
+                (to_final, member.id, interaction.guild_id))
+    db.commit()
+    embed.add_field(name='Successfully Transferred!', value=f"Successfully transferred ${amount} from {interaction.user.display_name} to {member.display_name}", inline=False)
+    embed.add_field(name="\u200b", value="", inline=False)
+    embed.add_field(name=f"{interaction.user.display_name}'s  Balance", value=f"💵  ${from_final}", inline=False)
+    embed.set_thumbnail(url=interaction.user.display_avatar)
+    # embed.add_field(name="\u200b", value="", inline=False)
+    embed.add_field(name=f"{member.display_name}'s  Balance", value=f"💵  ${to_final}", inline=False)
+    embed.set_thumbnail(url=member.display_avatar)
+    await interaction.response.send_message(embed=embed)
+    send_to_webhook("/transfer_currency_to", f"{interaction.user.display_name} [{interaction.user.id}]",
+                    f"{interaction.guild} [{interaction.guild_id}]",
+                    f"{amount} transferred to {member} [{member.id}]")
+    return
+
+
+@tree.command(name="transfer_currency_from_to", description="Transfer currency from a user to another user")
+@app_commands.describe(member_from="from")
+@app_commands.describe(member_to="to")
+@app_commands.describe(amount="amount")
+async def transfer_currency_from_to(interaction: discord.Interaction, member_from: discord.Member,
+                                    member_to: discord.Member, amount: int):
+    embed = discord.Embed(title="/transfer_currency_from_to",
+                          description=f"/transfer_currency__from_to was used by {interaction.user.display_name}",
+                          colour=discord.Colour.blue())
+    embed.add_field(name="\u200b", value="", inline=False)
+    if member_from == member_to:
+        await interaction.response.send_message(f"You cant send currency from a user to the same user", ephemeral=True)
+        return
+    async with db.execute("SELECT MONEY FROM currency WHERE GUILD_ID=? AND ID=?", (interaction.guild_id, member_from.id)) as cur:
+        from_exist = await cur.fetchall()
+    async with db.execute("SELECT MONEY FROM currency WHERE GUILD_ID=? AND ID=?", (interaction.guild_id, member_to.id)) as cur:
+        to_exist = await cur.fetchall()
+    if not from_exist or from_exist[0][0] < amount:
+        await interaction.response.send_message(f"User does not have any money to transfer", ephemeral=True)
+        await db.commit()
+        return
+    if not to_exist:
+        await db.execute("INSERT INTO currency VALUES(?,?,?)", (member_from.id, interaction.guild_id, 0))
+        await db.commit()
+        to_exist = ([0])
+    from_final = int(from_exist[0][0]) - amount
+    to_final = int(to_exist[0][0]) + amount
+    await db.execute("UPDATE currency SET MONEY=? WHERE ID=? AND GUILD_ID=?", (from_final, member_from.id, interaction.guild_id))
+    await db.execute("UPDATE currency SET MONEY=? WHERE ID=? AND GUILD_ID=?", (to_final, member_to.id, interaction.guild_id))
+    await db.commit()
+    embed.add_field(name="Successfully Transferred!", value=f"Successfully transferred ${amount} from {member_from} to {member_to}!", inline=False)
+    embed.add_field(name="\u200b", value="", inline=False)
+    embed.add_field(name=f"{member_from}'s  Balance", value=f"💵 ${from_final}", inline=False)
+    embed.add_field(name=f"{member_to}'s  Balance", value=f"💵 ${to_final}", inline=False)
+    embed.set_thumbnail(url=member_to.display_avatar)
+    await interaction.response.send_message(embed=embed)
+    send_to_webhook("/transfer_currency_from_to", f"{interaction.user.display_name} [{interaction.user.id}]",
+                    f"{interaction.guild} [{interaction.guild_id}]",
+                    f"{amount} transferred from {member_from} [{member_from.id}] to {member_to} [{member_to.id}]")
+    return
+
+
+@tree.command(name='reset_economy', description='Resets all currency in your server (code in dms)')
+@app_commands.describe(code="code")
+async def reset_economy(interaction: discord.Interaction, code: int = None):
+    authorised = False
+    if interaction.user == interaction.guild.owner or interaction.user.id == 549548831189237760:
+        authorised = True
+    if not authorised:
+        await interaction.response.send_message(f"```You are not authorised to do this, please contact the server owner to reset the economy```", ephemeral=True)
+        return
+    if not code:
+        dm = await interaction.user.create_dm()
+        await dm.send(f"Enter this into the code argument and rerun the command:\n {int((interaction.guild_id + interaction.user.id)/100000)}")
+        await interaction.response.send_message(f"```Check Your Private Messages And Enter The Code To Confirm```", ephemeral=True)
+        return
+    if code == int((interaction.guild_id + interaction.user.id)/100000):
+        await db.execute("UPDATE currency set MONEY=0 WHERE GUILD_ID=?", (interaction.guild_id, ))
+        await db.commit()
+        embed = discord.Embed(title="Economy Reset", description=f"/reset_economy has been used by {interaction.user}")
+        embed.add_field(name="\u200b", value="", inline=False)
+        embed.add_field(name="Economy has been successfully reset!", value="This change is **Irreversible**")
+        embed.set_thumbnail(url=interaction.user.display_avatar)
+        await interaction.response.send_message(embed=embed)
+        send_to_webhook("/reset_economy", f"{interaction.user.display_name} [{interaction.user.id}]",
+                        f"{interaction.guild} [{interaction.guild_id}]",
+                        f"economy reset {interaction.guild} [{interaction.guild_id}]")
+        return
+    else:
+        await interaction.response.send_message(f"```Check Your Private Messages And Enter The Code To Confirm```", ephemeral=True)
+        return
+
+
+
+@tree.command(name="shop_set_up", description="Set up your server's shop")
+@app_commands.describe(shop_name="shop name")
+@app_commands.describe(shop_description="shop description")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def shop_set_up(interaction: discord.Interaction, shop_name: str = None, shop_description: str = None):
+    if not shop_name:
+        shop_name = f"{interaction.guild}"
+    if not shop_description:
+        shop_description = f"Welcome!"
+    if len(shop_description) > 300:
+        await interaction.response.send_message("```Shop description cannot contain more than 300 characters```", ephemeral=True)
+        return
+    if len(shop_name) > 120:
+        await interaction.response.send_message("```Shop name cannot contain more than 120 characters```",
+                                                ephemeral=True)
+        return
+    async with db.execute("SELECT * FROM guild_info WHERE GUILD_ID=?",
+                          (interaction.guild_id, )) as cur:
+        check = await cur.fetchall()
+    if not check:
+        await interaction.response.senrd_message("Shop Successfully Set Up!", ephemeral=True)
+        await db.commit()
+        send_to_webhook("/shop_set_up", f"{interaction.user.display_name} [{interaction.user.id}]",
+                        f"{interaction.guild} [{interaction.guild_id}]",
+                        f"""{interaction.guild} [{interaction.guild_id}] has set up their shop,\n 
+                        name = {shop_name}, description = {shop_description}""")
+        return
+    print(f"{shop_name}, {shop_description}")
+    await db.execute("UPDATE guild_info SET SHOP_NAME=?, SHOP_DESCRIPTION=? WHERE GUILD_ID=?", (shop_name, shop_description, interaction.guild_id))
+    await db.commit()
+    await interaction.response.send_message("Shop Successfully Updated!", ephemeral=True)
+    return
+
+
+async def shop_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    async with db.execute("SELECT ITEM_NAME FROM guild_shop WHERE GUILD_ID=?", (interaction.guild_id,)) as cur:
+        shop_items = await cur.fetchall()
+    data = []
+    for item in shop_items:
+        if current.lower() in item[0].lower():
+            data.append(app_commands.Choice(name=item[0], value=item[0]))
+    return data
+
+
+async def shop_autocomplete_stock_available(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    async with db.execute("SELECT ITEM_NAME FROM guild_shop WHERE GUILD_ID=?", (interaction.guild_id,)) as cur:
+        shop_items = await cur.fetchall()
+    data = []
+    for item in shop_items:
+        if current.lower() in item[0].lower() and item[5] - item[10] <= 0:
+            data.append(app_commands.Choice(name=item[0], value=item[0]))
+    return data
+
+
+@tree.command(name="shop", description="Access your server's shop")
+async def shop(interaction: discord.Interaction):
+    async with db.execute("SELECT * FROM guild_info WHERE GUILD_ID=?", (interaction.guild_id, )) as cur:
+        guildinfo = await cur.fetchall()
+    if not guildinfo:
+        embed = discord.Embed(title=f"Uh Oh!", description=f"Looks like your server hasn't set a shop up yet!")
+        await interaction.response.send_message(embed=embed)
+        return
+    name = str(guildinfo[0][1])
+    description = str(guildinfo[0][2])
+    embed = discord.Embed(title=name, description=description)
+    async with db.execute("SELECT * FROM guild_shop WHERE GUILD_ID=?", (interaction.guild_id, )) as cur:
+        check = await cur.fetchall()
+    if not check:
+        await interaction.response.send_message(embed=embed)
+        return
+    new_page = discord.Embed(title=name, description=description)
+    pages = []
+    for number, item in enumerate(check):
+        item_dict = {
+            'item_id': int(item[1]),
+            'item_name': str(item[2]),
+            'item_description': (item[3] if item[3] else "No Description"),
+            'item_price': int(item[4]),
+            'item_quantity': format(f"{item[5] - item[10]}")
+        }
+        if int(item[5] - item[10]) <= 0:
+            continue
+
+        if number % 4 == 0 and number != 0:
+            new_page.add_field(name="\u200b", value="", inline=False)
+            pages.append(new_page)
+            new_page = discord.Embed(title=name, description=description)
+            new_page.add_field(name=f"{item_dict['item_name']}: ${item_dict['item_price']} (ID.{item_dict['item_id']})",
+                               value=f"{item_dict['item_description']} (Stock: {item_dict['item_quantity']}/{format(str(item[5]))})",
+                               inline=False)
+        else:
+            # new_page.add_field(name="\u200b", value="", inline=False)
+            new_page.add_field(name=f"{item_dict['item_name']}: ${item_dict['item_price']} (ID.{item_dict['item_id']})",
+                               value=f"{item_dict['item_description']} (Stock: {item_dict['item_quantity']}/{format(str(item[5]))})",
+                               inline=False)
+    if len(check) % 4 != 0:
+        new_page.add_field(name="\u200b", value="", inline=False)
+        pages.append(new_page)
+
+    pagination = Pagination(pages)
+    page = pagination.page
+    await interaction.response.send_message(embed=pages[page], view=pagination)
+
+
+@tree.command(name="item_data", description="Look at data of your shop items")
+@app_commands.autocomplete(item_name=shop_autocomplete)
+@app_commands.describe(item_id="Item ID")
+async def item_data(interaction: discord.Interaction, item_name: str = None, item_id: int = None):
+    if not item_name and not item_id:
+        async with db.execute("SELECT * FROM guild_shop WHERE GUILD_ID=?", (interaction.guild_id, )) as cur:
+            items = await cur.fetchall()
+    if not item_name:
+        async with db.execute("SELECT * FROM guild_shop WHERE GUILD_ID=? AND ITEM_ID=?" , (interaction.guild_id, item_id)) as cur:
+            items = await cur.fetchall()
+    if not item_id:
+        async with db.execute("SELECT * FROM guild_shop WHERE GUILD_ID=? AND ITEM_NAME=?", (interaction.guild_id, item_name)) as cur:
+            items = await cur.fetchall()
+    if not [items, item_id, item_id]:
+        embed = discord.Embed(title="Uh Oh!", description="Looks like your server does not have any items in the shop!")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    if not [items, item_name]:
+        embed = discord.Embed(title="Uh Oh!", description="Looks like an item with that ID does not exist!")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    if not [items, item_id]:
+        embed = discord.Embed(title="Uh Oh!", description="Looks like an item with that name does not exist!")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    async with db.execute("SELECT * FROM guild_info WHERE GUILD_ID=?", (interaction.guild_id, )) as cur:
+        data = await cur.fetchall()
+        if not data:
+            embed = discord.Embed(title="Uh Oh!", description="Looks like there are no items in your guild!")
+            await interaction.response.send_message(embed=embed)
+            return
+    name = data[0][1]
+    description = data[0][2]
+    new_page = discord.Embed(title=name, description=description)
+    pages = []
+    for number, item in enumerate(items):
+        item_dict = {
+            'item_id': int(item[1]),
+            'item_name': str(item[2]),
+            'item_description': str(item[3]),
+            'item_price': int(item[4]),
+            'item_quantity': int(item[5]),
+            'transferable': bool(item[6]),
+            'usable': bool(item[7]),
+            'role': (item[8] if item[8] else False),
+            'max_per': (item[9] if item[9] else False),
+            'sold': int(item[10])
+        }
+
+        if number % 5 == 0 and number != 0:
+            new_page.add_field(name="\u200b", value="", inline=False)
+            pages.append(new_page)
+            new_page = discord.Embed(title=name, description=description)
+            new_page.add_field(name=f"""Item Id: {item_dict['item_id']}, Item Name: {item_dict['item_name']}, 
+            Price: {item_dict['item_price']}""",
+                               value=f"""Item Description: {item_dict['item_description']}\n 
+                               Transferable: {item_dict['transferable']},\n Usable: {item_dict['usable']}\n
+                               Linked To Role: {item_dict['role']},\n Max Per User: {item_dict['max_per']}\n 
+                               Quantity available: {item_dict['item_quantity'] - item_dict['sold']}/{item_dict['item_quantity']}""",
+                               inline=False)
+            new_page.add_field(name="\u200b", value="", inline=False)
+        else:
+            new_page.add_field(name=f"""Item Id: {item_dict['item_id']}, Item Name: {item_dict['item_name']}, 
+                        Price: {item_dict['item_price']}""",
+                               value=f"""Item Description: {item_dict['item_description']}\n 
+                                           Transferable: {item_dict['transferable']},\n Usable: {item_dict['usable']}\n
+                                           Linked To Role: {item_dict['role']},\n Max Per User: {item_dict['max_per']}\n 
+                                           Quantity available: {item_dict['item_quantity'] - item_dict['sold']}/{item_dict['item_quantity']}""",
+                               inline=False)
+            new_page.add_field(name="\u200b", value="", inline=False)
+
+    if len(data) % 5 != 0:
+        new_page.add_field(name="\u200b", value="", inline=False)
+        pages.append(new_page)
+
+    pagination = Pagination(pages)
+    page = pagination.page
+    await interaction.response.send_message(embed=pages[page], view=pagination, ephemeral=True)
+
+
+@tree.command(name="create_shop_item", description="Create an item in your shop")
+@app_commands.checks.has_permissions(moderate_members=True)
+@app_commands.describe(item_name="item name")
+@app_commands.describe(item_description="item description")
+@app_commands.describe(item_price="item price")
+@app_commands.describe(quantity="quantity of item")
+@app_commands.describe(max_per_person="max per person")
+@app_commands.describe(transferable="transferable/tradable")
+@app_commands.describe(usable="usable")
+@app_commands.describe(role_id="link to a role (role id)")
+async def create_shop_item(interaction: discord.Interaction, item_name: str, item_price: int, item_description: str,
+                           quantity: int = 99999999, max_per_person: int = None, transferable: bool = False, usable: bool = False, role_id: int = None):
+    if len(item_name) > 120:
+        await interaction.response.send_message("```Name cannot be more than 120 characters in length```", ephemeral=True)
+        return
+    if item_description and len(item_description) > 300:
+        await interaction.response.send_message("```Description cannot be more than 300 characters in length```", ephemeral=True)
+        return
+    if quantity > 99999999:
+        await interaction.response.send_message("```Max quantity of items can only be 99999999```", ephemeral=True)
+        return
+    if quantity < 1:
+        await interaction.response.send_message("```quantity of items cannot be less than 1```", ephemeral=True)
+        return
+    if max_per_person and max_per_person < 1:
+        await interaction.response.send_message("```Max quantity per user cannot be less than 1```", ephemeral=True)
+        return
+    async with db.execute("SELECT * FROM guild_shop WHERE GUILD_ID=?", (interaction.guild_id, )) as cur:
+        items = await cur.fetchall()
+    if len(items) >= 99:
+        await interaction.response.send_message("You can only have up to 100 items in your shop", ephemeral=True)
+        return
+    await db.execute('INSERT INTO guild_shop VALUES(?,?,?,?,?,?,?,?,?,?,?)', (interaction.guild_id, len(items) + 1, item_name, item_description,
+                                                                       item_price, quantity, transferable,
+                                                                       usable, role_id, max_per_person, 0))
+    await db.commit()
+    await interaction.response.send_message("Item Successfully Created!", ephemeral=True)
+    return
+
+
+@tree.command(name="edit_shop_item", description="Edit a shop item")
+@app_commands.describe(item_id="Item ID")
+@app_commands.checks.has_permissions(moderate_members=True)
+@app_commands.describe(item_name="item name")
+@app_commands.describe(item_description="item description")
+@app_commands.describe(item_price="item price")
+@app_commands.describe(quantity="quantity of item")
+@app_commands.describe(max_per_person="max per person")
+@app_commands.describe(transferable="transferable/tradable")
+@app_commands.describe(usable="usable")
+@app_commands.describe(role_id="link to a role (role id)")
+async def edit_shop_item(interaction: discord.Interaction, item_id: int, item_name: str = None, item_price: int = None, item_description: str = None,
+                           quantity: int = None, max_per_person: int = None, transferable: bool = None, usable: bool = None, role_id: int = None):
+    changes = f"{item_name}{item_price}{item_description}{quantity}{max_per_person}{transferable}{usable}{role_id}"
+    if changes == 'NoneNoneNoneNoneNoneNoneNoneNone':
+        await interaction.response.send_message("```No changes were made```", ephemeral=True)
+        return
+    if item_name and len(item_name) > 120:
+        await interaction.response.send_message("```Name cannot be more than 120 characters in length```", ephemeral=True)
+        return
+    if item_description and len(item_description) > 300:
+        await interaction.response.send_message("```Description cannot be more than 300 characters in length```", ephemeral=True)
+        return
+    if quantity and quantity > 99999999:
+        await interaction.response.send_message("```Max quantity of items can only be 99999999```", ephemeral=True)
+        return
+    if quantity and quantity < 1:
+        await interaction.response.send_message("```quantity of items cannot be less than 1```", ephemeral=True)
+        return
+    if max_per_person and max_per_person < 1:
+        await interaction.response.send_message("```Max quantity per user cannot be less than 1```", ephemeral=True)
+        return
+    async with db.execute("SELECT * FROM guild_shop WHERE GUILD_ID=? AND ITEM_ID=?", (interaction.guild_id, item_id)) as cur:
+        items = await cur.fetchall()
+    if not items:
+        await interaction.response.send_message(f"Error, an item with ID: {item_id} does not exist")
+        return
+
+    item_name = items[0][2] if not item_name else item_name
+    item_price = items[0][4] if not item_price else item_price
+    item_description = item_description if item_description else items[0][3]
+    quantity = quantity if quantity else items[0][5]
+    transferable = transferable if transferable else items[0][6]
+    usable = usable if usable else items[0][7]
+    role_id = role_id if role_id else items[0][8]
+    max_per_person = max_per_person if max_per_person else items[0][9]
+    quantity_sold = items[0][10]
+    if quantity_sold > quantity:
+        await interaction.response.send_message(
+            f"```Error: New quantity is less than current amount in circulation (Quantity Sold: {quantity_sold})```")
+        return
+
+    await db.execute("""UPDATE guild_shop SET ITEM_NAME=?, ITEM_DESCRIPTION=?, ITEM_PRICE=?, QUANTITY=?, TRANSFERABLE=?, 
+    USABLE=?, ROLE=?, LIMIT_PER=? WHERE GUILD_ID=? AND ITEM_ID=?""", (item_name, item_description,
+                                                                                      item_price, quantity, transferable,
+                                                                                      usable, role_id, max_per_person,
+                                                                                      interaction.guild_id,
+                                                                                      item_id))
+    await db.commit()
+    await interaction.response.send_message("Item Successfully Updated!", ephemeral=True)
+    return
+
+
+@tree.command(name="remove_shop_item", description="Remove an item from the shop")
+@app_commands.checks.has_permissions(moderate_members=True)
+@app_commands.describe(item_id="Item ID")
+@app_commands.autocomplete(item_name=shop_autocomplete)
+async def remove_shop_item(interaction: discord.Interaction, item_id: int = None, item_name: str = None):
+    if not item_name and not item_id:
+        await interaction.response.send_message("```Item ID or Item_Name not given```", ephemeral=True)
+        return
+    if not item_name:
+        async with db.execute("SELECT * FROM guild_shop WHERE GUILD_ID=? AND ITEM_ID=?", (interaction.guild_id, item_id)) as cur:
+            item = await cur.fetchall()
+        if not item:
+            await interaction.response.send_message("```Item ID does not exist```", ephemeral=True)
+            return
+    if not item_id:
+        async with db.execute("SELECT * FROM guild_shop WHERE GUILD_ID=? AND ITEM_NAME=?", (interaction.guild_id, item_name)) as cur:
+            item = await cur.fetchall()
+        if not item:
+            await interaction.response.send_message("```Item ID does not exist```", ephemeral=True)
+            return
+    await db.execute("DELETE FROM guild_shop WHERE GUILD_ID=? AND ITEM_ID=?", (interaction.guild_id, item_id))
+    await db.commit()
+    await interaction.response.send_message("Item Successfully Removed", ephemeral=True)
+    return
+
+
+
+@tree.command(name="inventory", description="Access you or another user's inventory")
+@app_commands.describe(user="user")
+async def inventory(interaction: discord.Interaction, user: discord.Member = None):
+    if not user:
+        user = interaction.user
+    async with db.execute("SELECT * FROM inventory WHERE GUILD_ID=? AND USER_ID=?", (interaction.guild_id, user.id)) as cur:
+        inv = await cur.fetchall()
+    new_page = discord.Embed(title=f"{user.display_name}'s  Inventory", description="")
+    new_page.add_field(name="\u200b", value="", inline=False)
+    new_page.set_image(url=user.display_avatar)
+    if not inv:
+        await interaction.response.send_message(embed=new_page, ephemeral=True)
+        return
+    if inv[0][4] and interaction.user.id != user.id:
+        embed = discord.Embed(title=f"{user.display_name}'s  Inventory", description="This user's inventory is private")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    async with db.execute("SELECT * FROM guild_shop WHERE GUILD_ID=?", (interaction.guild_id, )) as cur:
+        guild_shop = await cur.fetchall()
+    pages = []
+    for number, item in enumerate(inv):
+        item_dict = {
+            'item_id': int(item[2]),
+            'quantity': int(item[3]),
+            'private': bool(item[4]),
+            'item_name': [name[2] for name in guild_shop if int(item[2]) == name[1]],
+            'item_description': [desc[3] for desc in guild_shop if int(item[2]) == desc[1]],
+            'value': [value[4] for value in guild_shop if int(item[2]) == value[1]]
+        }
+
+        if number % 4 == 0 and number != 0:
+            new_page.add_field(name="\u200b", value="", inline=False)
+            pages.append(new_page)
+            new_page = discord.Embed(title=f"{user.display_name}'s  Inventory", description="")
+            new_page.add_field(name="\u200b", value="", inline=False)
+            new_page.set_image(url=user.display_avatar)
+            new_page.add_field(name=f"{item_dict['item_name']}: Owns {item_dict['quantity']}",
+                               value=f"Item Description: {item_dict['item_description']}\nValue: ${item_dict['value']}",
+                               inline=True)
+        elif number % 2 == 0 and number != 0:
+            new_page.add_field(name="\u200b", value="", inline=False)
+            new_page.add_field(name=f"{item_dict['item_name']}: Owns {item_dict['quantity']}",
+                               value=f"Item Description: {item_dict['item_description']}\nValue: ${item_dict['value']}",
+                               inline=True)
+        else:
+            new_page.add_field(name=f"{item_dict['item_name'][0]}: Owns {item_dict['quantity']}",
+                               value=f"Item Description: {item_dict['item_description'][0]}\nValue: ${item_dict['value'][0]}",
+                               inline=True)
+    if len(inv) % 4 != 0:
+        new_page.add_field(name="\u200b", value="", inline=False)
+        pages.append(new_page)
+
+    pagination = Pagination(pages)
+    page = pagination.page
+    await interaction.response.send_message(embed=pages[page], view=pagination, ephemeral=True)
+
+
+@tree.command(name="public_inventory", description="Access you or another user's inventory")
+@app_commands.describe(user="user")
+async def public_inventory(interaction: discord.Interaction, user: discord.Member = None):
+    if not user:
+        user = interaction.user
+    async with db.execute("SELECT * FROM inventory WHERE GUILD_ID=? AND USER_ID=?", (interaction.guild_id, user.id)) as cur:
+        inv = await cur.fetchall()
+    new_page = discord.Embed(title=f"{user.display_name}'s  Inventory", description="")
+    new_page.add_field(name="\u200b", value="", inline=False)
+    new_page.set_image(url=user.display_avatar)
+    if not inv:
+        await interaction.response.send_message(embed=new_page)
+        return
+    if inv[0][4] and interaction.user.id != user.id:
+        embed = discord.Embed(title=f"{user.display_name}'s  Inventory", description="This user's inventory is private")
+        await interaction.response.send_message(embed=embed)
+    async with db.execute("SELECT * FROM guild_shop WHERE GUILD_ID=?", (interaction.guild_id, )) as cur:
+        guild_shop = await cur.fetchall()
+    pages = []
+    for number, item in enumerate(inv):
+        item_dict = {
+            'item_id': int(item[2]),
+            'quantity': int(item[3]),
+            'private': bool(item[4]),
+            'item_name': [name[2] for name in guild_shop if int(item[2]) == name[1]],
+            'item_description': [desc[3] for desc in guild_shop if int(item[2]) == desc[1]],
+            'value': [value[4] for value in guild_shop if int(item[2]) == value[1]]
+        }
+
+        if number % 4 == 0 and number != 0:
+            new_page.add_field(name="\u200b", value="", inline=False)
+            pages.append(new_page)
+            new_page = discord.Embed(title=f"{user.display_name}'s  Inventory", description="")
+            new_page.add_field(name="\u200b", value="", inline=False)
+            new_page.set_image(url=user.display_avatar)
+            new_page.add_field(name=f"{item_dict['item_name'][0]}: Owns {item_dict['quantity']}",
+                               value=f"Item Description: {item_dict['item_description'][0]}\nValue: ${item_dict['value'][0]}",
+                               inline=True)
+        elif number % 2 == 0 and number != 0:
+            new_page.add_field(name="\u200b", value="", inline=False)
+            new_page.add_field(name=f"{item_dict['item_name'][0]}: Owns {item_dict['quantity']}",
+                               value=f"Item Description: {item_dict['item_description'][0]}\nValue: ${item_dict['value'][0]}",
+                               inline=True)
+        else:
+            new_page.add_field(name=f"{item_dict['item_name'][0]}: Owns {item_dict['quantity']}",
+                               value=f"Item Description: {item_dict['item_description'][0]}\nValue: ${item_dict['value'][0]}",
+                               inline=True)
+    if len(inv) % 4 != 0:
+        new_page.add_field(name="\u200b", value="", inline=False)
+        pages.append(new_page)
+
+    pagination = Pagination(pages)
+    page = pagination.page
+    await interaction.response.send_message(embed=pages[page], view=pagination)
+
+
+@tree.command(name="buy_shop_item", description="Buy an item from the shop")
+@app_commands.autocomplete(item_name=shop_autocomplete_stock_available)
+@app_commands.describe(item_id="Item ID")
+@app_commands.describe(quantity='Quantity')
+async def buy_shop_item(interaction: discord.Interaction, item_name: str, quantity: int,  item_id: int = None):
+    if not item_id and not item_name:
+        await interaction.response.send_message("```No ID or Name entered```", ephemeral=True)
+        return
+    if item_name and item_id:
+        await interaction.response.send_message("```Only enter either ID or Name```", ephemeral=True)
+    async with db.execute("SELECT * FROM guild_shop WHERE GUILD_ID=?", (interaction.guild_id, )) as cur:
+        guild_shop = await cur.fetchall()
+    if not guild_shop:
+        embed = discord.Embed(title="Uh Oh!", description="Looks like your server has not set up a shop yet")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    if item_name:
+        item_list = [item[1] for item in guild_shop if item_name == item[2]]
+        if not item_list:
+            await interaction.response.send_message("```No Item with that name exists```", ephemeral=True)
+            return
+        item_id = item_list[0]
+    if item_id:
+        check = (item[1] for item in guild_shop if item_id == item[1])
+        if not check:
+            await interaction.response.send_message("```No Item with that ID exists```", ephemeral=True)
+            return
+        item_list = [item[2] for item in guild_shop if item_id == item[1]]
+        item_name = item_list[0]
+
+    async with db.execute("SELECT * FROM guild_shop WHERE GUILD_ID=? AND ITEM_ID=?", (interaction.guild_id, item_id)) as cur:
+        shop = await cur.fetchall()
+        shop_item = shop[0]
+    async with db.execute("SELECT QUANTITY FROM inventory WHERE GUILD_ID=? AND USER_ID=? AND ITEM_ID=?",
+                          (interaction.guild_id, interaction.user.id, item_id)) as cur:
+        quantity_owned = await cur.fetchall()
+        quantity_owned = 0 if not quantity_owned else quantity_owned[0][0]
+
+    if shop_item[9] and int(quantity_owned) + quantity > int(shop_item[9]):
+        await interaction.response.send_message(f"```You can only buy {int(shop_item[9] - int(quantity_owned))} more```", ephemeral=True)
+        return
+    if int(quantity) > int(shop_item[5] - shop_item[10]):
+        await interaction.response.send_message(
+            f"```Not enough of item stock available. Stock available {shop_item[5] - shop_item[10]}```", ephemeral=True)
+        return
+
+    async with db.execute("SELECT MONEY FROM currency WHERE GUILD_ID=? AND ID=?", (interaction.guild_id, interaction.user.id)) as cur:
+        money = await cur.fetchall()
+
+        if not money:
+            await interaction.response.send_message(
+                f"```You do not have enough currency to purchase this quantity```",
+                ephemeral=True)
+            return
+
+    if int(money[0][0]) < int(shop_item[4])*quantity:
+        await interaction.response.send_message(
+            f"```You do not have enough currency to purchase this quantity```", ephemeral=True)
+        return
+
+    final_amount_money = int(money[0][0]) - int(shop_item[4])*quantity
+    shop_sold = shop_item[10] + quantity
+
+    if quantity_owned == 0:
+        await db.execute('INSERT INTO inventory VALUES(?,?,?,?,?)', (interaction.user.id, interaction.guild_id, item_id,
+                                                                       quantity, 0))
+    else:
+        await db.execute("UPDATE inventory SET QUANTITY=? WHERE GUILD_ID=? AND USER_ID=? AND ITEM_ID=?", (
+            quantity + quantity_owned, interaction.guild_id, interaction.user.id, item_id
+        ))
+
+    await db.execute("UPDATE currency SET MONEY=? WHERE GUILD_ID=? AND ID=?", (
+        final_amount_money, interaction.guild_id, interaction.user.id
+    ))
+
+    await db.execute("UPDATE guild_shop SET QUANTITY_SOLD=? WHERE GUILD_ID=? AND ITEM_ID=?", (
+        shop_sold, interaction.guild_id, item_id
+    ))
+    await db.commit()
+
+    receipt = discord.Embed(title="Purchase Successful!", description=f"Successfully purchased {quantity} {item_name}")
+    receipt.add_field(name="\u200b", value="", inline=False)
+    receipt.set_image(url=interaction.user.display_avatar)
+    await interaction.response.send_message(embed=receipt, ephemeral=True)
+    return
+
+
+@tree.command(name="restock_shop_item", description="restock an item in the shop")
+@app_commands.autocomplete(item=shop_autocomplete)
+@app_commands.describe(add_quantity="quantity")
+async def restock_shop_item(interaction: discord.Interaction, item: str, add_quantity: int):
+    async with db.execute("SELECT * FROM guild_shop WHERE ITEM_NAME=? AND GUILD_ID=?",
+                          (item, interaction.guild_id)) as cur:
+        data = await cur.fetchall()
+        sold = data[0][10]
+    if sold + add_quantity > 99999999:
+        await interaction.response.send_message("```New quantity exceeds 99,999,999```", ephemeral=True)
+        return
+    await db.execute("UPDATE guild_shop SET QUANTITY=? WHERE ITEM_ID=? AND GUILD_ID=?", (sold+add_quantity, data[0][1],
+                                                                                         interaction.guild_id))
+    await db.commit()
+    await interaction.response.send_message("```Successfully restocked```", ephemeral=True)
+    pass
+
+
+@tree.command(name="pawn_shop_set_up", description="Set up a pawn shop")
+@app_commands.describe(shop_name="shop name")
+@app_commands.describe(shop_description="shop description")
+async def pawn_shop_set_up(interaction: discord.Interaction, shop_name: str = None, shop_description: str = None):
+    if not shop_name:
+        shop_name = f"{interaction.guild}"
+    if not shop_description:
+        shop_description = f"Welcome!"
+    if len(shop_description) > 300:
+        await interaction.response.send_message("```Shop description cannot contain more than 300 characters```", ephemeral=True)
+        return
+    if len(shop_name) > 120:
+        await interaction.response.send_message("```Shop name cannot contain more than 120 characters```",
+                                                ephemeral=True)
+        return
+
+
+@client.event
+async def on_message(message):
+    if message.author == client.user:
+        return
+    message_author = message.author
+    channel = message.channel
+    guild = message.guild
+    message = message.content
+
+    print(f"[{guild}][{channel}] {message_author}: {message}")
+    res = response(message)
+    if res:
+        await channel.send(res)
+
+
+@client.event
+async def on_ready() -> None:
+    await tree.sync()
+    global db
+    db = await aiosqlite.connect("currency.db")
+    print(f"{client.user} is running!")
+
+client.run(token=Token)
