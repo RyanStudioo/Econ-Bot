@@ -1,0 +1,34 @@
+# wasn't able to find any good pagination modules, so I just made one
+
+import discord
+from typing import Callable, Optional
+import aiosqlite
+
+db = None
+async def thing():
+    global db
+    db = await aiosqlite.connect('currency.db')
+
+class Pagination(discord.ui.View):
+    def __init__(self, pages):
+        super().__init__()
+        self.page = 0
+        self.pages = pages
+
+        # self.add_item(discord.ui.Button(label='<', style=discord.ButtonStyle.green, custom_id="prev"))
+        # self.add_item(discord.ui.Button(label='>', style=discord.ButtonStyle.green, custom_id="next"))
+        self.pages[self.page].set_footer(text=f"page {self.page + 1}/{len(self.pages)}")
+        
+    @discord.ui.button(label="<", style=discord.ButtonStyle.green)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page > 0:
+            self.page -= 1
+            self.pages[self.page].set_footer(text=f"page {self.page + 1}/{len(self.pages)}")
+            await interaction.response.edit_message(embed=self.pages[self.page])
+
+    @discord.ui.button(label=">", style=discord.ButtonStyle.green)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page < len(self.pages) - 1:
+            self.page += 1
+            self.pages[self.page].set_footer(text=f"page {self.page + 1}/{len(self.pages)}")
+            await interaction.response.edit_message(embed=self.pages[self.page])
